@@ -38,7 +38,6 @@ Why is this the device in question? Because it doesn't follow our organizations 
 ```kql
 DeviceProcessEvents
 | where InitiatingProcessFileName has "powershell"
-| where AccountName == "acolaight"
 | where DeviceName == "acolyte756"
 | sort by Timestamp asc
 | project Timestamp, DeviceName, AccountName, FileName, ProcessCommandLine
@@ -200,7 +199,7 @@ I noticed a pattern that this attacker used the word "sync" so when I analyzed "
 ```kql
 DeviceFileEvents
 | where DeviceName == "victor-disa-vm"
-| where FileName contains "sync", "save"
+| where FileName has_any ("sync", "save")
 | take 100
 ```
 
@@ -229,6 +228,129 @@ DeviceRegistryEvents
 
 
 Registry value associated with persistence: powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\Public\savepoint_sync.ps1"
+
+
+## Flag 9 - External Communication Re-established
+
+
+The attacker was most likely going to exeternally communicate again just like how he did on his initial breach. 
+
+```kql
+DeviceNetworkEvents
+| where DeviceName == "victor-disa-vm"
+| where InitiatingProcessFileName in~ ("powershell.exe", "cmd.exe", "wmic.exe", "rundll32.exe", "mshta.exe")
+    or InitiatingProcessCommandLine has_any ("http", "https", "wget", "Invoke-WebRequest", "curl", "tcp", "443", "nc", "netcat")
+| project
+    Timestamp,
+    DeviceName,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    RemoteIP,
+    RemotePort,
+    RemoteUrl,
+    InitiatingProcessAccountName
+| order by Timestamp asc
+```
+
+This query helped me identify the same domain they reached out to initially "pipedream.net" = eo1v1texxlrdq3v.m.pipedream.net
+
+
+![image](https://github.com/user-attachments/assets/19461c74-9214-4039-b729-5dbc45059e63)
+
+"tcp", "443", "nc" (common in beaconing or tunneling)
+
+
+## Flag 10 – Stealth Mechanism Registration
+
+
+Some attackers don’t need to schedule a task or add something to the registry to stay on a system. Instead, they use a hidden Windows feature called WMI (Windows Management Instrumentation). With WMI, they can tell Windows:
+
+“If X happens (like the system boots up or a user logs in), automatically run this code.”
+
+That means the attacker’s script or payload runs automatically without needing to interact with the system again. It’s stealthy, because it doesn’t use the more obvious signs of persistence like scheduled tasks or startup folders.
+
+
+## Query:
+```kql
+DeviceProcessEvents
+| where DeviceName == "victor-disa-vm"
+| where ProcessCommandLine has "beacon"
+   or FileName has "beacon"
+| project
+    Timestamp,
+    DeviceName,
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessAccountName
+| order by Timestamp asc
+```
+
+This query makes sense because it helps identify suspicious processes related to command-and-control (C2) activity — specifically those that include the term "beacon," which is commonly used in attacker tooling. And it was part of the flag hint. 
+
+![image](https://github.com/user-attachments/assets/7aec76c9-8e95-4ea0-8bed-2d546304cfde)
+
+Earliest activity time tied to WMI persistence: 2025-05-26T02:48:07.2900744Z - May 25, 2025 7:08:09 PM
+
+
+## Flag 11 – Suspicious Data Access Simulation
+
+Mimikatz are widely used by attackers to steal credentials from Windows systems. Mimikatz and its variations often leave distinct traces—such as access to password storage files, credential caches, or security-related system secrets.
+
+I decided to take kind of a wildcard approach to this one and use the following query to find the Mimikatz, probably not to most accurate but it worked. 
+
+## Query:
+```kql
+DeviceProcessEvents
+| where DeviceName == "victor-disa-vm"
+| where ProcessCommandLine contains "mimi"
+```
+
+I was able to find the file deployed to attempt credential dumping. 
+
+![image](https://github.com/user-attachments/assets/48f926e5-5f98-4f90-8d47-625d5feef865)
+
+
+## Flag 12 – Unusual Outbound Transfer
+
+The goal was to detect data transfers to untrusted cloud or file-sharing services. Attackers often use familiar sites to hide activity, so tracking connections and the SHA256 of involved processes helps identify the exact tools used.
+
+Why the query helped: It finds network connections to suspicious domains and links them to the responsible processes by their SHA256 hash, enabling precise tracking of malicious files.
+
+
+```kql
+DeviceProcessEvents
+| where DeviceName == "victor-disa-vm"
+| project Timestamp,
+          DeviceName,
+          InitiatingProcessAccountName,
+          ProcessCommandLine,
+          InitiatingProcessFileName,
+          SHA256
+| order by Timestamp asc
+```
+
+![image](https://github.com/user-attachments/assets/17591eaf-5b24-442c-b1e8-6f6c386202da)
+
+
+## Flag 13 – Sensitive Asset Interaction
+
+The goal was to uncover if any important internal documents, especially time-sensitive or critical project files, were accessed. Monitoring access logs helps reveal not just file views but the attacker’s intent, with a focus on documents tied to year-end projects, as per the Organization's suspicion. 
+
+## Query:
+```kql
+DeviceProcessEvents
+| where DeviceName == "victor-disa-vm"
+| where ProcessCommandLine has_any ("2025-12", "2025_12", "2025.12") 
+| order by Timestamp asc
+```
+This query helped me find:
+![image](https://github.com/user-attachments/assets/4b3e0b61-45f7-4d73-9a28-f2511e80dac9)
+
+
+
 
 
 
