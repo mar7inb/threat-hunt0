@@ -8,7 +8,6 @@ Multiple organizations across Southeast Asia and Eastern Europe observed coordin
 ## Identifying the device in question: 
 
 ## Query:
-
 ```kql
 DeviceProcessEvents
 | where Timestamp between (datetime(2025-05-23) .. datetime(2025-05-26))
@@ -32,7 +31,7 @@ Why is this the device in question? Because it doesn't follow our organizations 
 
 ## Flag 1 - Initial Powershell Execution 
 
-**Objective:** Initial signs of PowerShell being used in a way that deviates from baseline usage. Look for PowerShell actions that started the chain.
+**Objective:** Initial signs of PowerShell being used in a way that deviates from baseline usage. I searched for PowerShell actions that started the chain.
 
 
 ## Query:
@@ -104,6 +103,8 @@ Finding a C2.ps1 (Command and Control) script on a machine usually means the sys
 
 **Thought:** Adversaries rarely rely on just one persistence method. Scheduled tasks offer stealth and reliability — track anomalies in their creation times and descriptions
 
+
+## Query:
 ```kql
 DeviceRegistryEvents
 | where DeviceName == "acolyte756"
@@ -115,6 +116,119 @@ I already knew the earliest time this machine started showing activity, so I use
 
 
 ![image](https://github.com/user-attachments/assets/bedd9c92-bbce-4aa4-b129-6abea287422a)
+
+
+HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\SimC2Task
+
+
+## Flag 5 – Obfuscated PowerShell Execution
+
+**Objective:** Uncover signs of script concealment or encoding in command-line activity. I had to look for PowerShell patterns that don't immediately reveal their purpose. 
+
+
+## Query:
+```kql
+DeviceProcessEvents
+| where DeviceName == "acolyte756"
+| where FileName in~ ("powershell.exe", "pwsh.exe")
+| where ProcessCommandLine has_any (
+    "-version 2", 
+    "-executionpolicy bypass", 
+    "-executionpolicy unrestricted", 
+    "-nop", "-noprofile", 
+    "-windowstyle hidden", 
+    "-w hidden", 
+    "-noninteractive", 
+    "-enc", "-encodedcommand"
+)
+| project Timestamp, DeviceName, InitiatingProcessAccountName, ProcessCommandLine
+| order by Timestamp desc
+```
+
+![image](https://github.com/user-attachments/assets/6591c1e2-4e01-4742-8722-fd064dff3398)
+
+I found this execution made by the user "acolaight" - "powershell.exe" -EncodedCommand VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAiAFMAaQBtAHUAbABhAHQAZQBkACAAbwBiAGYAdQBzAGMAYQB0AGUAZAAgAGUAeABlAGMAdQB0AGkAbwBuACIA
+The attacker 
+
+## Flag 6 – Obfuscated PowerShell Execution
+
+Attackers sometimes use outdated script configurations to bypass modern controls. Modern defenses can sometimes only detect modern behavior. The previous query (with the help of ChatGPT, it was created) already helped us identify the outdated process. 
+"-version2" 
+
+![image](https://github.com/user-attachments/assets/ed86bfb6-a403-405e-b58d-a51e0f22bf62)
+
+
+"powershell.exe" -Version 2 -NoProfile -ExecutionPolicy Bypass -NoExit
+
+Kind of an obvious one as Powershell's current version is 7.4. - A quick Google search helped me find this out. 
+
+
+
+## Flag 7 – Remote Movement Discovery
+
+
+An attacker will always want to gain more access once they are successful in the initial breach. The attacker was successful in downgrading powershell versions, so a powershell execution was expected. 
+
+```kql
+DeviceProcessEvents
+| where ProcessCommandLine has "schtasks.exe"
+| where DeviceName == "acolyte756"
+| project Timestamp, DeviceName, InitiatingProcessAccountName, ProcessCommandLine
+| sort by Timestamp desc
+```
+
+We’d want to consider looking for schtasks.exe based on previous behavior because:
+
+PowerShell activity was already observed, suggesting possible script-based execution.
+
+The presence of registry modifications (like entries under TaskCache or Run) implies a scheduled task or persistence mechanism may have been set up.
+
+Attackers often use schtasks.exe in tandem with PowerShell to automate execution of payloads like C2.ps1.
+
+
+![image](https://github.com/user-attachments/assets/d47d4307-6777-48fd-8d3f-0e6169d77c24)
+
+
+The attacker was able to get access to "victor-disa-vm"
+
+
+## Flag 8 and 8.1 – Entry Indicators on Second Host and Persistence Registration on Entry
+
+I noticed a pattern that this attacker used the word "sync" so when I analyzed "victor-disa-vm" I looked for file names that conatined "sync". Attackers use keywords like these because they sound "routine" to corporate environments. 
+
+## Query:
+```kql
+DeviceFileEvents
+| where DeviceName == "victor-disa-vm"
+| where FileName contains "sync", "save"
+| take 100
+```
+
+This query helped me find: 
+
+![image](https://github.com/user-attachments/assets/f66b6f69-b2c1-433b-a160-6284c3d39eff)
+
+
+savepoint_sync.lnk - was the lateral entry point. - .lnk files can point to and silently execute other scripts, executables, or remote payloads. Attackers often use them as:
+
+Droppers or launchers for malicious tools.
+
+Disguised links that look like legitimate shortcuts but lead to attacker-controlled scripts or shares.
+
+
+The attacker at this point was also going to mess with the computer's registry values so I then looked for suspicious persistence registration. 
+
+## Query:
+```kql
+DeviceRegistryEvents
+| where DeviceName == "victor-disa-vm"
+| where RegistryValueData contains "sync" or RegistryKey contains "sync"
+```
+
+![image](https://github.com/user-attachments/assets/1b13d551-ad94-477d-9ff9-a0276d482eca)
+
+
+Registry value associated with persistence: powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\Public\savepoint_sync.ps1"
 
 
 
