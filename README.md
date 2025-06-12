@@ -1,4 +1,4 @@
-# threat-hunt0 - Deep Access: The Adversary
+# threat-hunt-0 - Deep Access: The Adversary
 
 # Scenario:
 
