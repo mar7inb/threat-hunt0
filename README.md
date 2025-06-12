@@ -1,5 +1,8 @@
 # threat-hunt-0 - Deep Access: The Adversary
 
+
+![image](https://github.com/user-attachments/assets/f04b566d-a31b-4e26-b81c-ce1ff666fe29)
+
 # Scenario:
 
 Multiple organizations across Southeast Asia and Eastern Europe observed coordinated, stealthy activity involving PowerShell bursts, registry changes, and leaked credentials mimicking red-team tools. Despite no alerts triggering, evidence points to a long-term, targeted campaign — possibly by a revived threat group or mercenaries — leveraging supply chain access to exfiltrate sensitive data across sectors. Two compromised machines may hold the key to uncovering the full scope. Virtual machines were created around May 24th, 2025. These systems were active for only a few hours before deletion, suggesting minimal logging and potential use as entry points.
@@ -351,13 +354,100 @@ This query helped me find:
 
 
 
+## Flag 14 – Sensitive Asset Interaction
+
+looking for the specific command used to compress the malicious tool—likely a sign of staging for exfiltration or lateral movement.
+
+
+## Query:
+```kql
+DeviceFileEvents
+| where DeviceName == "victor-disa-vm"
+| where ActionType == "FileCreated"
+| where FolderPath has_any (
+    "C:\\Users\\Public\\",
+    "C:\\ProgramData\\",
+    "C:\\Users\\",
+    "C:\\Temp\\",
+    "C:\\Windows\\Temp\\"
+)
+| where FileName endswith ".zip"
+    or FileName endswith ".rar"
+    or FileName endswith ".7z"
+    or FileName endswith ".cab"
+    or FileName endswith ".tar"
+| project Timestamp,
+          DeviceName,
+          FileName,
+          FolderPath,
+          InitiatingProcessAccountName,
+          InitiatingProcessCommandLine,
+          SHA256
+| order by Timestamp asc
+```
+
+![image](https://github.com/user-attachments/assets/72b4e198-fe90-4bc3-94f4-0e27070bda96)
+
+
+What the attacker did:
+Used PowerShell to run a script without user profiles (-NoProfile) and bypassed execution policy restrictions (-ExecutionPolicy Bypass), which are common tactics to avoid detection and security controls.
+
+Compressed a folder named dropzone_spicy located in the public directory.
+
+Created a ZIP file called spicycore_loader_flag8.zip, also in a public directory—an unusual place for legitimate compression activity.
+
+This likely staged tools or exfiltration data, prepping it for movement either to another host or outside the network.
+
+Why the query helped:
+The KQL query filtered for:
+Newly created compressed files (.zip, .rar, etc.)
+Non-administrative locations commonly abused by attackers (C:\Users\Public\, C:\Temp\, etc.)
+This approach zeroed in on compression events in suspicious paths—exactly where and how attackers stage malicious payloads for lateral movement or exfiltration. The PowerShell command stood out clearly due to its syntax and location, revealing part of the attacker’s toolchain and intent.
+
+
+## Flag 15 – Deployment Artifact Planted
+
+The goal is to confirm if payloads were saved to disk by looking for unusual compressed files in shared or public directories. These staged files may not have been executed yet, but they signal upcoming malicious activity.
+
+I used the same query it had already identified the compressed file: spicycore_loader_flag8.zip
+
+
+## Flag 16 – Persistence Trigger Finalized
+
+The goal was to identify the last scheduled task configured to run suspicious or newly dropped content — particularly scripts or executables with uncommon or non-standard names.
+
+## Query:
+```kql
+DeviceProcessEvents
+| where InitiatingProcessAccountName == "v1cth0r"
+| where ProcessCommandLine has_any ("schtasks", "ScheduledTasks")
+| where ProcessCommandLine has_any (".ps1")
+| project Timestamp, DeviceName, InitiatingProcessAccountName, ProcessCommandLine, SHA256, InitiatingProcessFileName
+| order by Timestamp asc
+```
+
+This query helped me pinpoint the exact time when the user v1cth0r executed a scheduled task related to a PowerShell script. By filtering for process commands that included both "schtasks" and PowerShell script extensions (".ps1"), I focused on scheduled task creations or modifications involving suspicious scripts. Sorting the results by timestamp ascending allowed me to identify the earliest occurrence of such activity, leading me to the specific timestamp **2025-05-26T07:01:01.6652736Z**, which marks a likely moment when the attacker set up automation to run malicious content. I basically used previous hints to formulate the query and paid attention to the attackers habits. 
+
+![image](https://github.com/user-attachments/assets/2d3233ff-b0bd-4836-a635-495de2131a05)
+
+| Technique ID | Technique Name                                | Description                                                       |
+|--------------|-----------------------------------------------|-------------------------------------------------------------------|
+| T1059        | Command and Scripting Interpreter             | Use of PowerShell, CMD, WMIC, Rundll32, Mshta to execute commands or scripts. |
+| T1071.001    | Application Layer Protocol: Web Protocols     | Use of HTTP/S protocols for command and control or data transfer. |
+| T1105        | Ingress Tool Transfer                         | Use of utilities like wget, curl, Invoke-WebRequest to download tools or payloads. |
+| T1027        | Obfuscated Files or Information               | Use of encoded or obfuscated command lines to evade detection.   |
+| T1041        | Exfiltration Over C2 Channel                   | Use of outbound network connections to exfiltrate data.          |
+| T1070.004    | Indicator Removal on Host: File Deletion      | (Implied) Use of date-based filenames for cleanup or staging.    |
 
 
 
+# Lessons Learned
 
-
-
-
+- Attackers often abuse built-in Windows tools like PowerShell, CMD, WMIC, Rundll32, and Mshta to execute commands and communicate over the network, making detection harder.
+- Monitoring command lines for suspicious keywords such as URLs, IP addresses, or common network utilities (`wget`, `curl`, `Invoke-WebRequest`) is essential for identifying potentially malicious activity.
+- Date-based patterns in filenames or command arguments can indicate attacker staging, persistence, or automated tasks.
+- Correlating process execution with network connections and user accounts provides valuable context to investigate suspicious behaviors and build a timeline.
+- Narrowing analysis to specific devices reduces noise and helps focus threat hunting efforts effectively.
 
 
   
